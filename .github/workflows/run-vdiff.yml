@@ -1,0 +1,81 @@
+name: Run v-diff
+
+#Github manual action 
+on:
+	pull_request: 
+  workflow_dispatch:
+
+
+env:
+  AWS_REGION: us-east-1                   # set this to your preferred AWS region, e.g. us-west-1
+  ECR_REPOSITORY: vdiff-build           
+  ECS_CLUSTER: vdiff                 
+  ECS_TASK_DEFINITION: vdiff-client 
+                                               # file, e.g. .aws/task-definition.json
+  CONTAINER_NAME: web           # set this to the name of the container in the
+                                               # containerDefinitions section of your task definition
+  PR_NUMBER: ${{ github.event.pull_request.number }} #Adds the PR Number to env variables. 
+  BRANCH_NAME: ${{ github.head_ref }}         #Storing Branch Name into env variables
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v1
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+
+      - name: Check Branch Name
+        run: |
+          echo ${{ github.head_ref }}
+          echo ${{ env.BRANCH_NAME }}
+      
+      - name: Check PR Number
+        run: |
+          echo ${{ github.event.pull_request.number }}
+          echo ${{ env.PR_NUMBER }}
+
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Turnstyle
+        uses: softprops/turnstyle@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: BRANCH_NAME
+        run: |
+          # Build a docker container and
+          # push it to ECR so that it can
+          # be deployed to ECS.
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Deploy task
+        run: |
+          aws ecs run-task --cluster ${{ env.ECS_CLUSTER }} --task-definition ${{ env.ECS_TASK_DEFINITION }} --launch-type FARGATE --network-configuration '{"awsvpcConfiguration":{"subnets":["subnet-047dd0426c83bfdc9"],"securityGroups":["sg-0ebf4cdcc67cbb770"],"assignPublicIp":"ENABLED"}}' ----overides file://client_config.json
